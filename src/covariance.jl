@@ -1,24 +1,54 @@
+covariance(k, m; kwargs...) = covariance(k, m, cache(k, m), Matrix, Nothing; kwargs...)
+
+covariance(k, m::Vector, args...; kwargs...) = covariance(k, reshape(m, (length(m),1)), args...; kwargs...)
+
+function covariance(k, m::AbstractMatrix, ::Type{T}; kwargs...) where T<:Matrix
+    covariance(k, m, cache(k, m), Matrix, Nothing; kwargs...)
+end
+
+function covariance(k, m::AbstractMatrix, ::Type{T}; kwargs...) where T<:CovarianceMatrix
+    covariance(k, m, cache(k, m), T, SVD; kwargs...)
+end
+
+function covariance(k, m::AbstractMatrix, ::Type{T}; kwargs...) where T<:Factorization
+    covariance(k, m, cache(k, m), CovarianceMatrix, T; kwargs...)
+end
+
+function covariance(k, m::AbstractMatrix, cache::AbstractCache, ::Type{T}; kwargs...) where T<:Factorization
+    covariance(k, m, cache, CovarianceMatrix, T; kwargs...)
+end
+
+function covariance(k, m::AbstractMatrix, cache::AbstractCache, ::Type{T}; kwargs...) where T<:Matrix
+    covariance(k, m, cache, Matrix, Nothing; kwargs...)
+end
+
+#======
+Demeaning methods
+=======#
+
+function demean!(cache, ::Type{Val{true}})
+    mean!(cache.μ, cache.q)
+    cache.q .= cache.q .- cache.μ
+end
+demean!(cache, ::Type{Val{false}}) = nothing
+
+function demean!(cache, X, ::Type{Val{true}})
+    copy!(cache.q, X)
+    mean!(cache.μ, cache.q)
+    cache.q .= cache.q .- cache.μ
+end
+demean!(cache, X, ::Type{Val{false}}) = copy!(cache.q, X); nothing
+
 #======
 A. HAC
 =======#
-
-covariance(X, k::HAC, returntype::Type{T1} = CovarianceMatrix, factortype::Type{T2} = Cholesky; kwargs...) where {T1, T2}= covariance(X, k, HACCache(X, k), returntype, factortype; kwargs...) 
-
-function covariance(X::T,
-                    k::HAC{F},
-                    cache::HACCache = HACCache(X, k),
-                    returntype::Type{T1} = CovarianceMatrix,
-                    factortype::Type{T2} = Cholesky;
-                    demean::Bool = true,
-                    scale::Int = size(X,1)) where {T<:AbstractMatrix,
-                                                   F,                                    
-                                                   T1<:Union{CovarianceMatrix, Matrix},
-                                                   T2<:Union{Nothing, Factorization}}
+function covariance(k::T, X, cache, returntype, factortype;
+                    demean::Bool=true, scale::Int=size(X,1)) where T<:HAC
     check_cache_consistenty(k, cache)
     demean!(cache, X, Val{demean})
     prewhiten!(cache)
     _covariance!(cache, k)
-    finalize(T2, T1, k, cache, scale)
+    finalize(cache, returntype, factortype, k, scale)
 end
 
 #=--
@@ -31,11 +61,11 @@ function _covariance!(cache::HACCache, k::HAC{Optimal{T}}) where {T<:OptimalBand
     __covariance!(cache, k)
 end
 
-_covariance!(cache::HACCache, k::HAC{T}) where {T<:Fixed} = __covariance!(cache, k)
+_covariance!(cache, k::HAC{T}) where {T<:Fixed} = __covariance!(cache, k)
 
-function __covariance!(cache::HACCache, k::HAC)
+function __covariance!(cache, k::HAC)
     n, p = size(cache.XX)
-    fill!(cache.V, zero(eltype(cache.XX)))
+    #fill!(cache.V, zero(eltype(cache.XX)))
     bw = first(k.bw)
     mul!(cache.V, cache.XX', cache.XX)
     triu!(cache.V)
@@ -46,53 +76,58 @@ function __covariance!(cache::HACCache, k::HAC)
     end
     LinearAlgebra.copytri!(cache.V, 'U')
     swhiten!(cache)
-    #rmul!(cache.V, 1/(n+isprewhiten(k)))
     nothing
 end
 
 #=======
-B. HC
+B. VARHC
 =======#
-function covariance(X::T, k::K, returntype::Type{T1} = CovarianceMatrix, factortype::Type{T2} = Cholesky; demean::Bool = true, scale::Int = size(X,1)) where {T<:AbstractMatrix, K<:HC, T1<:Union{CovarianceMatrix, Matrix}, T2<:Union{Nothing, Factorization}}
-    V = X'X
-    finalize(V, T2, T1, k, scale)
+function covariance(k::T, X, cache, returntype, factortype;
+    demean::Bool=true, scale::Int=1) where T<:VARHAC
+    maxlag, lagstrategy, selectionstrategy = k.maxlag, k.lagstrategy, k.selectionstrategy
+    demean!(cache, X, Val{demean})
+    strategy = selectionstrategy == :aic ? 1 : (selectionstrategy == :bic ? 2 : 3)
+    cache.V .= varhac(cache.q,maxlag,lagstrategy,strategy)
+    finalize(cache, returntype, factortype, k, scale)
 end
 
-function covariance(X::T, k::K, cache::HCCache, returntype::Type{T2} = CovarianceMatrix, factortype::Type{T1} = Cholesky; demean::Bool = true, scale::Int = size(X, 1)) where {T<:AbstractMatrix, K<:HC, T1<:Union{Nothing, Factorization}, T2<:Union{CovarianceMatrix, Matrix}}
-    check_cache_consistenty(k, cache)
-    _covariance!(cache, k)
-    finalize(T2, T1, k, cache, scale)
+
+#=======
+B. HC
+=======#
+function covariance(k::K, X, cache, returntype, factortype;
+                    demean::Bool=true, scale::Int=size(X, 1)) where K<:HC
+    demean!(cache, X, Val{demean})
+    cache.V .= cache.q'*cache.q
+    finalize(cache, returntype, factortype, k, scale)
 end
 
 #======
 CRHC
 =======#
-function covariance(X::T, k::K, returntype::Type{T1} = CovarianceMatrix, factortype::Type{T2} = Cholesky; demean::Bool = true, scale::Int = size(X,1), sorted::Bool = false) where {T<:AbstractMatrix, K<:CRHC, T1<:Union{CovarianceMatrix, Matrix}, T2<:Union{Nothing, Factorization}}
-    cache = CRHCCache(X, k.cl)
-    covariance(X, k, cache, factortype, returntype, demean = demean, scale = scale, sorted = sorted)
-end
 
-function covariance(X::T, k::K, cache::CRHCCache, returntype::Type{T1} = CovarianceMatrix, factortype::Type{T2} = Cholesky; demean::Bool = true, scale::Int = size(X, 1), sorted::Bool = false ) where {T<:AbstractMatrix, K<:CRHC, T1<:Union{CovarianceMatrix, Matrix}, T2<:Union{Nothing, Factorization}}
+function covariance(k::T, X, cache, returntype, factortype;
+                    demean::Bool=true, scale::Int=size(X, 1), sorted::Bool=false) where T<:CRHC
     #check_cache_consistenty(k, cache)
+    demean!(cache, X, Val{demean})
     _covariance!(cache, X, k, sorted)
-    finalize(cache.M, T2, T1, k, scale)
+    finalize(cache, returntype, factortype, k, scale)
 end
 
 #=---
 Implementation
 ---=#
 
-function _covariance!(cache, X, k::CRHC, sorted::Bool)
+function _covariance!(cache, X, k::CRHC, sorted)
     CovarianceMatrices.installsortedX!(cache, X, k, Val{sorted})
     bstarts = (searchsorted(cache.clus, j[2]) for j in enumerate(unique(cache.clus)))
-    CovarianceMatrices.clusterize!(cache, bstarts)
-    rmul!(cache.M, dof_adjustment(cache, k, bstarts))
-
+    V = CovarianceMatrices.clusterize!(cache, bstarts)
+    rmul!(V, dof_adjustment(cache, k, bstarts))
 end
 
 function installsortedX!(cache, X, k, ::Type{Val{true}})
     copyto!(cache.q, X)
-    copyto!(cache.clus, k.cl)    
+    copyto!(cache.clus, k.cl)
     nothing
 end
 
@@ -115,25 +150,15 @@ end
 #======
 Finalizers
 ======#
-finalize(V, ::Type{T}, ::Type{Matrix}, k, scale::Real) where T = rmul!(V, 1/scale)
-finalize(::Type{T}, ::Type{Matrix}, k, cache, scale::Real) where T = rmul!(cache.V, 1/scale)
 
-function finalize(V, ::Type{SVD}, ::Type{CovarianceMatrix}, k, scale::Real)
-    rmul!(V, 1/scale)
-    CovarianceMatrix(svd(V), k, V)
+factorizer(::Type{SVD}) = svd
+factorizer(::Type{Cholesky}) = x->cholesky(Hermitian(x), check = false)
+
+function finalize(cache, ::Type{M}, T, k, scale) where M<:Matrix
+    return copy(rmul!(cache.V, 1/scale))
 end
 
-function finalize(V, ::Type{Cholesky}, ::Type{CovarianceMatrix},  k, scale::Real)
-    rmul!(V, 1/scale)
-    CovarianceMatrix(cholesky(Hermitian(V)), k, V)
-end
-
-function finalize(::Type{SVD}, ::Type{CovarianceMatrix}, k, cache::AbstractCache, scale::Real)
+function finalize(cache, ::Type{M}, T, k, scale) where M<:CovarianceMatrix
     rmul!(cache.V, 1/scale)
-    CovarianceMatrix(svd(cache.V), k, copy(cache.V))
-end
-
-function finalize(::Type{Cholesky}, ::Type{CovarianceMatrix},  k, cache::HACCache, scale::Real)
-    rmul!(cache.V, 1/scale)
-    CovarianceMatrix(cholesky(Hermitian(cache.V)), k, copy(cache.V))
+    CovarianceMatrix(factorizer(T)(cache.V), k, copy(cache.V))
 end

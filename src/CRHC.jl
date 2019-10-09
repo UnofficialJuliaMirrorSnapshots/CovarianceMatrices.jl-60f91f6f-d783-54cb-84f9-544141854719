@@ -1,44 +1,21 @@
-struct CRHCCache{VN<:AbstractVector, F1<:AbstractMatrix, F2<:AbstractMatrix, V<:AbstractVector, IN<:AbstractVector}
-    q::F1
-    X::F1
-    x::F2
-    v::V
-    w::V
-    η::V
-    u::V
-    M::F1
-    clusidx::IN
-    clus::VN
-end
-
-function CRHCCache(X::AbstractMatrix{T1}, cl::AbstractVector{T2}) where {T1,T2}
-    n, p = size(X)
-    CRHCCache(similar(X), similar(X), Array{T1, 2}(undef, p, p),
-             Array{T1, 1}(undef, n), Array{T1, 1}(undef, n),
-             Array{T1, 1}(undef, n), Array{T1, 1}(undef, n),
-             Array{T1, 2}(undef, p, p), Array{Int, 1}(undef, n),
-             Array{T2, 1}(undef, n))
-end
-
 function installsortedxuw!(cache, m, k, ::Type{Val{true}})
     copyto!(cache.X, modelmatrix(m))
     copyto!(cache.u, residuals(m))
     copyto!(cache.clus, k.cl)
-    if !isempty(m.rr.wts)
+    if !isempty(smplweights(m))
         cache.w .= sqrt.(smplweights(m))
         broadcast!(*, cache.u, cache.u, cache.w)
         broadcast!(*, cache.u, cache.u, cache.w)
     end
-
 end
 
 function installsortedxuw!(cache, m, k, ::Type{Val{false}})
     n, p = size(cache.X)
     sortperm!(cache.clusidx, k.cl)
     cidx = cache.clusidx
-    u = CovarianceMatrices.residuals(m)
-    w = CovarianceMatrices.smplweights(m)
-    X = CovarianceMatrices.modelmatrix(m)
+    u = residuals(m)
+    w = smplweights(m)
+    X = modelmatrix(m)
     uu = cache.u
     XX = cache.X
     ww = cache.w
@@ -111,7 +88,7 @@ function getqii(v::CRHC3, cache, A, bstarts)
 end
 
 function clusterize!(cache, bstarts)
-    M = cache.M
+    M = cache.V
     fill!(M, zero(eltype(M)))
     U = cache.q
     p, p = size(M)
