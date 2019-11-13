@@ -10,7 +10,7 @@ mutable struct CRHCCache{M<:AbstractMatrix, V<:AbstractVector, C, IN}
     "Meat"
     Shat::M
     "The cluster indices (*sorted*)"
-    clusters_indices::IN
+    clustersindices::IN
     "The *sorted* cluster indicator"
     f::CategoricalArray
 end
@@ -48,16 +48,16 @@ end
 categorize(a::AbstractArray) = categorical(a)
 categorize(f::CategoricalArray) = f
 
-function clusters_intervals(f::CategoricalArray)
+function clustersintervals(f::CategoricalArray)
     s = CategoricalArrays.order(f.pool)[f.refs]
     ci = collect(searchsorted(s, j) for j in unique(s))
     return ci
 end
 
-function install_cache(k::CRHC, X::AbstractMatrix{T}) where T
+function installcache(k::CRHC, X::AbstractMatrix{T}) where T
     f = categorize(k.cl)
     (X, ), sf = bysort((X,), f)
-    ci = clusters_intervals(sf)
+    ci = clustersintervals(sf)
     n, p = size(X)
     chol = cholesky(diagm(0=>repeat([one(T)], inner=[p])))
     em = similar(X)
@@ -68,18 +68,18 @@ end
 
 
 """
-    clusters_indices(c::CRHCCache)
+    clustersindices(c::CRHCCache)
 
 Return an array whose element `i` is a `Range{Int}` with indeces of the i-th cluster. Since
 the data is sorted when cached, the indices are contigous.
 """
-clusters_indices(c::CRHCCache) = c.clusters_indices
+clustersindices(c::CRHCCache) = c.clustersindices
 StatsModels.modelmatrix(c::CRHCCache) = c.modelmatrix
 momentmatrix(c::CRHCCache) = c.momentmatrix
 resid(c::CRHCCache) = c.residuals
 invcrossx(c::CRHCCache) = inv(crossx(c))
 crossx(c::CRHCCache) = c.crossx
-#clusters_categorical(c::CRHCCache) = c.clusters_indices ## TODO: remove it (??)
+#clusters_categorical(c::CRHCCache) = c.clustersindices ## TODO: remove it (??)
 
 """
     dofadjustment(k::CRHC, ::CRHCCache)
@@ -87,54 +87,54 @@ crossx(c::CRHCCache) = c.crossx
 Calculate the default degrees-of-freedom adjsutment for `CRHC`
 
 # Arguments
-- `k::CRHC`: The Cluster Robust type
-- `c::CRHCCache`: the CRHCCache from which to extract the information
+- `k::CRHC`: cluster robust variance type
+- `c::CRHCCache`: the `CRHCCache` from which to extract the information
 # Return
 - `Float`: the degrees-of-fredom adjustment
 # Note: the adjustment is a multyplicative factor.
 """
 function dofadjustment(k::CRHC0, c::CRHCCache)
-    g = length(clusters_indices(c))
+    g = length(clustersindices(c))
     return g/(g-1)
 end
 
 function dofadjustment(k::CRHC1, c::CRHCCache)
-    g, (n, p) = length(clusters_indices(c)), size(modelmatrix(c))
+    g, (n, p) = length(clustersindices(c)), size(modelmatrix(c))
     return (n-1)/(n-p) * g/(g-1)
 end
 
 dofadjustment(k::CRHC2, c::CRHCCache) = 1
 
 function dofadjustment(k::CRHC3, c::CRHCCache)
-     g, (n, p) = length(clusters_indices(c)), size(modelmatrix(c))
+     g, (n, p) = length(clustersindices(c)), size(modelmatrix(c))
     return g/(g-1)
 end
 
-adjust_resid!(k::CRHC0, c::CRHCCache) = resid(c)
-adjust_resid!(k::CRHC1, c::CRHCCache) = resid(c)
+adjustresid!(k::CRHC0, c::CRHCCache) = resid(c)
+adjustresid!(k::CRHC1, c::CRHCCache) = resid(c)
 
-function adjust_resid!(v::CRHC2, c::CRHCCache)
+function adjustresid!(v::CRHC2, c::CRHCCache)
     n, p = size(momentmatrix(c))
     X, u = modelmatrix(c), resid(c)
-    invxx, indices = invcrossx(c), clusters_indices(c)
+    invxx, indices = invcrossx(c), clustersindices(c)
     Threads.@threads for index in indices
         Xv = view(X, index, :)
         uv = view(u, index, :)
         xAx = Xv*invxx*Xv'
-        ldiv!(cholesky!(Symmetric(I - xAx)).L, uv)
+        ldiv!(cholesky!(I - xAx; check=false).L, uv)
     end
     return u
 end
 
-function adjust_resid!(k::CRHC3, c::CRHCCache)
+function adjustresid!(k::CRHC3, c::CRHCCache)
     X, u = modelmatrix(c), resid(c)
     n, p = size(X)
-    invxx, indices = invcrossx(c), clusters_indices(c)
+    invxx, indices = invcrossx(c), clustersindices(c)
     Threads.@threads for index in indices
         Xv = view(X, index, :)
         uv = view(u, index, :)
         xAx = Xv*invxx*Xv'
-        ldiv!(cholesky!(Symmetric(I - xAx)), uv)
+        ldiv!(cholesky!(I - xAx; check=false), uv)
     end
     return rmul!(u, 1/sqrt(dofadjustment(k, c)))
 end
@@ -145,7 +145,7 @@ Base.@propagate_inbounds function clusterize!(c::CRHCCache)
     M = fill!(c.Shat, zeroM)
     p = size(M, 1)
     s = Array{eltype(U)}(undef, p)
-    for m in clusters_indices(c)
+    for m in clustersindices(c)
         fill!(s, zeroM)
         for j in 1:p
             for i in m
@@ -161,16 +161,18 @@ Base.@propagate_inbounds function clusterize!(c::CRHCCache)
     return LinearAlgebra.copytri!(M, 'U')
 end
 
-## Generic __vcov - Used by GLM, but more generic
-function __vcov(k::CRHC, cache, df)
-    B = inv(cache.crossx)
-    res = adjust_resid!(k, cache)
-    cache.momentmatrix .= cache.modelmatrix.*res
-    Shat = clusterize!(cache)
-    return Symmetric((B*Shat*B).*df)
-end
-
 renew(::CRHC0, id) = CRHC0(id, nothing)
 renew(::CRHC1, id) = CRHC1(id, nothing)
 renew(::CRHC2, id) = CRHC2(id, nothing)
 renew(::CRHC3, id) = CRHC3(id, nothing)
+
+# -----------------------------------------------------------------------------
+# Very Very private api (subject to continuous change - DO NOT USE!!!)
+# -----------------------------------------------------------------------------
+Base.@propagate_inbounds function __vcov(k::CRHC, cache, df)
+    B = inv(cache.crossx)
+    res = adjustresid!(k, cache)
+    cache.momentmatrix .= cache.modelmatrix.*res
+    Shat = clusterize!(cache)
+    return Symmetric((B*Shat*B).*df)
+end
